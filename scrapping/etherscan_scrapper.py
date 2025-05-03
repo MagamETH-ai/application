@@ -33,6 +33,13 @@ class EtherscanScrapper:
 
         for hex_address in duna_addresses:
             try:
+                # Проверяем, существует ли файл на Яндекс.Диске
+                yadisk_path = f"/exports/{hex_address}_transactions.csv"
+                if self.yadisk.exists(yadisk_path):
+                    print(f"File for user {hex_address} already exists on Yandex.Disk. Skipping...")
+                    scrapped_info[hex_address]["status"] = "already_exists"
+                    continue
+
                 # Открываем URL для адреса
                 self.driver.get(f'https://etherscan.io/txs?a={hex_address}')
 
