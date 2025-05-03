@@ -7,7 +7,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-class Scrapper:
+class DeBankScrapper:
     def __init__(self, driver, cache_file: Optional[str] = None):
         self.driver = driver
         self.cache_file = cache_file
@@ -132,7 +132,7 @@ if __name__ == "__main__":
         print("-" * 40)
         scrapped_addresses.add(address)
     driver = webdriver.Chrome()
-    scrapper = Scrapper(driver, cache_file=cache_file)
+    scrapper = DeBankScrapper(driver, cache_file=cache_file)
     scrapped_info = scrapper.get_info(scrapped_addresses)
     if (not os.path.exists(cache_file)):
         with open(cache_file, 'w') as f:

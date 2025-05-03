@@ -3,7 +3,7 @@ import os
 import random
 import mimetypes
 from settings import logger
-from scrapping import parse_scrapped_info
+from scrapping.debank_scrapper import parse_scrapped_info
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
