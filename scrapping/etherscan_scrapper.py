@@ -1,24 +1,37 @@
 import pandas as pd
+from typing import List
 import yadisk
+import atexit
 import json
 import time
 import glob
 import os
+import signal
+import sys
 from selenium import webdriver
 from dotenv import load_dotenv
-from typing import Set, List, Optional
+from typing import Set, List
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 
 class EtherscanScrapper:
-    def __init__(self, driver, download_dir: str = "."):
+    def __init__(self, driver, download_dir: str = ".", cache_file: str = "cache.json"):
         self.driver = driver
         print(f"Token: {os.getenv('YADISK_TOKEN')}")
         self.yadisk = yadisk.Client(token=os.getenv('YADISK_TOKEN'))
-        print(f"Yadisk client initialized. Instance: {self.yadisk}") 
+        print(f"Yadisk client initialized. Instance: {self.yadisk}")
         self.download_dir = download_dir
+        self.cache_file = cache_file
+        self.cache_list: List[str] = self.get_cache_list(cache_file)
+    
+    def get_cache_list(self, cache_file):
+        with open(cache_file, "r") as f:
+            storedData = json.load(f)
+        cache_list = storedData["cache_list"]
+        return cache_list
+
 
     def get_info(self, duna_addresses: Set[str]) -> dict:
         """
@@ -35,7 +48,9 @@ class EtherscanScrapper:
             try:
                 # Проверяем, существует ли файл на Яндекс.Диске
                 yadisk_path = f"/exports/{hex_address}_transactions.csv"
-                if self.yadisk.exists(yadisk_path):
+                if hex_address in self.cache_list or self.yadisk.exists(yadisk_path):
+                    if (hex_address not in self.cache_list):
+                        self.cache_list.append(hex_address)
                     print(f"File for user {hex_address} already exists on Yandex.Disk. Skipping...")
                     scrapped_info[hex_address]["status"] = "already_exists"
                     continue
@@ -85,7 +100,9 @@ class EtherscanScrapper:
 
                 # Если ошибок меньше порога, считаем обработку успешной
                 if error_count <= threshold:
-                    self.merge_csv_by_user(hex_address)
+                    result = self.merge_csv_by_user(hex_address)
+                    if (result):
+                        self.cache_list.append(hex_address)
                     scrapped_info[hex_address]["status"] = "success"
                     scrapped_info[hex_address]["errors"] = error_count
             except Exception as e:
@@ -94,7 +111,7 @@ class EtherscanScrapper:
             
         return scrapped_info
 
-    def merge_csv_by_user(self, hex_address: str):
+    def merge_csv_by_user(self, hex_address: str) -> bool:
         """
         Объединяет все CSV-файлы для конкретного пользователя в один CSV-файл и удаляет исходные файлы.
 
@@ -105,7 +122,7 @@ class EtherscanScrapper:
         
         if not user_files:
             print(f"No CSV files found for user {hex_address}.")
-            return
+            return False
 
         print(f"Found {len(user_files)} CSV files for user {hex_address}. Merging...")
         
@@ -126,11 +143,15 @@ class EtherscanScrapper:
             print(f"File {output_file} has been uploaded to Yandex.Disk at {yadisk_path}.")
         except Exception as e:
             print(f"Failed to upload file {output_file} to Yandex.Disk: {e}")
+            return False
 
         # Удаляем исходные файлы
-        for file in user_files:
-            os.remove(file)
-            print(f"Deleted file: {file}")
+        for file_path in user_files:
+            try:
+                os.remove(file_path)
+            except OSError as e:
+                print(f"Error deleting file {file_path}: {e}")
+        return True
 
     def _wait_for_download(self, hex_address: str, page = 1, timeout: int = 30):
         """
@@ -164,6 +185,13 @@ class EtherscanScrapper:
             new_path = os.path.join(self.download_dir, new_file_name)
             os.rename(downloaded_file, new_path)
             print(f"File renamed to: {new_file_name}")
+    
+    def save_cache(self):
+        with open(self.cache_file, "w") as cacheFile:
+            json.dump({
+                "cache_list": self.cache_list
+            }, cacheFile)
+
 
 def setup_chrome_driver(download_dir: str) -> webdriver.Chrome:
     chrome_options = Options()
@@ -187,13 +215,26 @@ def read_addresses_from_csv(file_path: str) -> List[str]:
         print(f"Произошла ошибка: {e}")
         return []
 
-if __name__ == "__main__":
+def onExit(eth: EtherscanScrapper):
+    eth.save_cache()
+    list_of_files = glob.glob(os.path.join(eth.download_dir, '*'))
+    for file_path in list_of_files:
+        try:
+            os.remove(file_path)
+        except OSError as e:
+            print(f"Error deleting file {file_path}: {e}")
+
+def main():
     load_dotenv(".env")
     addresses = read_addresses_from_csv('airdrop_wallets.csv')
     print(*addresses, sep='\n')
     download_dir = os.path.join(os.getcwd(), "exports")
     driver = setup_chrome_driver(download_dir)
     scrapper = EtherscanScrapper(driver, download_dir="exports")
+    atexit.register(onExit, scrapper)
     scrapped_info = scrapper.get_info(addresses)
     print(scrapped_info)
     driver.close()
+
+if __name__ == "__main__":
+    main()
