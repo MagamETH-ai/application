@@ -11,6 +11,7 @@ import atexit
 import json
 import time
 import glob
+import sys
 import os
 from selenium import webdriver
 from dotenv import load_dotenv
@@ -375,6 +376,8 @@ def onExit(manager: EtherscanScrapperManager):
         logger.info(f"Error deleting directory {manager.download_dir}: {e}")
 
 def main():
+    logger.info(f'GIL disabled: {not sys._is_gil_enabled()}')
+
     load_dotenv(".env")
     addresses = read_addresses_from_csv('airdrop_wallets.csv')
     logger.info("\n".join(addresses))

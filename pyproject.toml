@@ -1,0 +1,101 @@
+[tool.poetry]
+name = "etherscan-scraper"
+version = "0.1.0"
+description = "Etherscan scraper with proxy support and Yandex.Disk integration"
+authors = ["Ilyasov Timur <ilyasovtimur2001@gmail.com>"]
+readme = "README.md"
+license = "MIT"
+packages = [{include = "etherscan_scraper"}]
+
+[tool.poetry.dependencies]
+python = "^3.13"
+# Основные зависимости
+selenium = "^4.29.0"
+webdriver-manager = "^4.0.0"  # Обновленная версия для Python 3.13
+pandas = {version = "^2.2.3", allow-prereleases = true}
+requests = "^2.32.3"
+tqdm = "^4.67.1"
+python-dotenv = "^1.1.0"
+yadisk = "^3.3.0"
+aiogram = "^3.20.0.post0"
+python-magic = "^0.4.24"
+beautifulsoup4 = "^4.12.0"  # Обновленная версия
+pyyaml = "^6.0.2"
+concurrent-log-handler = "^0.9.20"
+
+# Дополнительные зависимости
+numpy = {version = "^2.2.5", allow-prereleases = true}  # Совместимая с Python 3.13 версия
+scipy = "^1.13.0"  # Обновленная версия
+scikit-image = "^0.22.0"  # Совместимая версия
+pillow = "^10.3.0"  # Обновленная версия
+opencv-python = "^4.10.0"
+aiohttp = "^3.9.0"  # Обновленная версия
+cryptography = "^42.0.0"  # Совместимая версия
+etherscan-python = "^2.1.0"
+pycryptodome = "^3.20.0"  # Совместимая версия
+pyotp = "^2.9.0"
+qrcode = "^8.0"
+urllib3 = "^2.2.3"
+python-dateutil = "^2.9.0"
+pytz = "^2024.1"
+
+# Необязательные GPU зависимости
+pytorch = {version = "^2.3.0", optional = true, markers = "python_version < '3.13'"}  # Проверить совместимость
+torchvision = {version = "^0.15.2", optional = true, markers = "python_version < '3.13'"}  # Проверить совместимость
+torchmetrics = {version = "^1.6.1", optional = true, markers = "python_version < '3.13'"}
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.1.1"  # Обновленная версия для Python 3.13
+pytest-cov = "^4.1.0"
+flake8 = "^7.0.0"
+mypy = "^1.10.0"
+black = "^24.4.0"
+isort = "^5.13.2"
+ipython = "^8.12.0"
+jupyter = "^1.0.0"
+types-requests = "^2.31.0"  # Для типизации
+types-pyyaml = "^6.0.12"
+
+[tool.poetry.extras]
+gpu = ["pytorch", "torchvision", "torchmetrics"]
+
+[tool.pytest.ini_options]
+python_files = "test_*.py"
+testpaths = ["tests"]
+addopts = "--cov=./ --cov-report=xml"
+
+[tool.black]
+line-length = 88
+target-version = ['py313']
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3
+include_trailing_comma = true
+force_grid_wrap = 0
+use_parentheses = true
+ensure_newline_before_comments = true
+line_length = 88
+known_first_party = ["etherscan_scraper"]
+known_third_party = [
+    "selenium", "pandas", "requests", "tqdm", "yadisk", "aiogram",
+    "numpy", "scipy", "skimage", "PIL", "cv2", "aiohttp"
+]
+
+[build-system]
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
