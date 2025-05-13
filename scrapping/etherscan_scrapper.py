@@ -54,12 +54,12 @@ def read_addresses_from_csv(file_path: str) -> List[str]:
 
 class EtherscanScrapperManager:
     def __init__(
-            self,
-            addresses: List[str],
-            num_workers: int,
-            download_dir: str = "exports",
-            cache_file: str = "cache.json",
-            proxies: List[str] = None
+        self,
+        addresses: List[str],
+        num_workers: int,
+        download_dir: str = "exports",
+        cache_file: str = "cache.json",
+        proxies: List[Tuple[str, float]] = []
     ):
         self.addresses = addresses
         self.num_workers = num_workers
@@ -98,8 +98,15 @@ class EtherscanScrapperManager:
         """
         Воркер, который обрабатывает задачи из очереди.
         """
+        logger.info(f"Start worker: Worker#{worker_id}")
         # Назначаем прокси для текущего воркера
-        proxy = self.proxies[worker_id] if worker_id < len(self.proxies) else None
+        proxy_info = self.proxies[worker_id] if worker_id < len(self.proxies) else None
+        logger.info(f"Worker {worker_id} using proxy: {proxy_info}")
+        proxy = proxy_info[0] if proxy_info else None
+        latency = proxy_info[1] if proxy_info else 0.0
+
+        # Рассчитываем таймаут для WebDriverWait
+        timeout = max(10.0, latency * 2.0)
 
         # Создаём отдельную директорию для воркера
         worker_download_dir = os.path.join(self.download_dir, f"worker_{worker_id}")
@@ -107,7 +114,7 @@ class EtherscanScrapperManager:
 
         # Инициализируем Chrome и Scrapper
         driver = setup_chrome_driver(worker_download_dir, proxy=proxy)
-        scrapper = EtherscanScrapper(driver, download_dir=worker_download_dir)
+        scrapper = EtherscanScrapper(driver, download_dir=worker_download_dir, timeout=timeout)
 
         while not self.queue.empty():
             try:
@@ -130,9 +137,8 @@ class EtherscanScrapperManager:
                 if result[hex_address]["status"] in ("success", "already_exists"):
                     with self.lock:
                         self.cache_list.append(hex_address)
-                
-                # Обновляем прогресс
-                self.progress_bar.update(1)
+                    # Обновляем прогресс
+                    self.progress_bar.update(1)
             except Exception as e:
                 logger.info(f"Worker {worker_id} encountered an error: {e}")
             finally:
@@ -147,18 +153,26 @@ class EtherscanScrapperManager:
         """
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             futures = [executor.submit(self.worker, worker_id) for worker_id in range(self.num_workers)]
-            concurrent.futures.wait(futures)
+            
+            for future in concurrent.futures.as_completed(futures):
+                try:
+                    # Получаем результат выполнения задачи
+                    future.result()
+                except Exception as e:
+                    # Логируем ошибку, если задача завершилась с исключением
+                    logger.error(f"An error occurred in a worker: {e}", exc_info=True)
         self.progress_bar.close()
         self.save_cache()
 
 class EtherscanScrapper:
-    def __init__(self, driver, download_dir: str):
+    def __init__(self, driver, download_dir: str, timeout: int):
         self.driver = driver
+        self.download_dir = download_dir
+        self.timeout = timeout  # Таймаут для WebDriverWait
+        logger.info(f"Initialized EtherscanScrapper with download directory: {self.download_dir}")
         logger.info(f"Token: {os.getenv('YADISK_TOKEN')}")
         self.yadisk = yadisk.Client(token=os.getenv('YADISK_TOKEN'))
-        logger.info(f"Yadisk client initialized. Instance: {self.yadisk}")
-        self.download_dir = download_dir
-        logger.info(f"Initialized EtherscanScrapper with download directory: {self.download_dir}")
+        logger.info(f"Yadisk client initialized. Instance: {self.yadisk}")        
 
     def get_info(self, hex_address: str) -> dict:
         """
@@ -180,7 +194,7 @@ class EtherscanScrapper:
             self.driver.get(f'https://etherscan.io/txs?a={hex_address}')
 
             # Ждём появления информации о страницах
-            total_pages_element = WebDriverWait(self.driver, 10).until(
+            total_pages_element = WebDriverWait(self.driver, self.timeout).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, 'ul.pagination > li:last-child > a'))
             )
 
@@ -198,7 +212,7 @@ class EtherscanScrapper:
                     # Открываем текущую страницу
                     self.driver.get(f'https://etherscan.io/txs?a={hex_address}&p={page}')
                     # Ждём появления кнопки экспорта
-                    export_button = WebDriverWait(self.driver, 10).until(
+                    export_button = WebDriverWait(self.driver, self.timeout).until(
                         EC.presence_of_element_located((By.ID, "btnExportQuickTransactionListCSV"))
                     )
 
@@ -309,7 +323,7 @@ class EtherscanScrapper:
             os.rename(downloaded_file, new_path)
             logger.info(f"File renamed to: {new_file_name}")
 
-async def check_proxy(session: aiohttp.ClientSession, proxy: str, test_url: str) -> Optional[Tuple[str, float]]:
+async def check_proxy(session: aiohttp.ClientSession, proxy: str, test_url: str, timeout: int) -> Optional[Tuple[str, float]]:
     """
     Проверяет доступность прокси и измеряет время отклика.
 
@@ -320,7 +334,7 @@ async def check_proxy(session: aiohttp.ClientSession, proxy: str, test_url: str)
     """
     try:
         start_time = asyncio.get_event_loop().time()
-        async with session.get(test_url, proxy=proxy, timeout=15) as response:
+        async with session.get(test_url, proxy=proxy, timeout=timeout) as response:
             latency = asyncio.get_event_loop().time() - start_time
             if response.status == 200:
                 return proxy, latency
@@ -328,13 +342,21 @@ async def check_proxy(session: aiohttp.ClientSession, proxy: str, test_url: str)
         logger.info(f"Proxy {proxy} failed. Exception: {e}")
     return None
 
-async def fetch_proxies_async(proxy_file: str = "https.txt", num_proxies: int = 8, test_url: str = "https://etherscan.io/") -> List[str]:
+async def fetch_proxies_async(
+    proxy_file: str = "https.txt",
+    num_proxies: int = 8,
+    test_url: str = "https://etherscan.io/",
+    max_retries: int = 3,
+    initial_timeout: int = 3
+) -> List[Tuple[str, float]]:
     """
     Загружает список актуальных HTTP-прокси, проверяет их доступность и возвращает N самых быстрых.
 
     :param proxy_file: Имя файла для сохранения списка прокси.
     :param num_proxies: Количество прокси, которые нужно вернуть.
     :param test_url: URL для проверки доступности прокси.
+    :param max_retries: Максимальное количество повторных попыток.
+    :param initial_timeout: Начальный таймаут для проверки прокси.
     :return: Список рабочих и быстрых прокси-серверов.
     """
     try:
@@ -348,36 +370,47 @@ async def fetch_proxies_async(proxy_file: str = "https.txt", num_proxies: int = 
         logger.info(f"Loaded {len(proxies)} proxies.")
         logger.info(proxies)
 
-        # Проверяем доступность прокси
-         # Создаём асинхронную сессию
-        async with aiohttp.ClientSession(headers={"User-Agent": "curl/8.7.1"}) as session:
-            tasks = [
-                check_proxy(session, proxy, test_url)
-                for proxy in proxies
-            ]
-            results = await tqdm_asyncio.gather(*tasks, desc="Checking proxies")
+        retry_count = 0
+        timeout = initial_timeout
+        working_proxies = []        
 
-        # Фильтруем рабочие прокси
-        working_proxies = [result for result in results if result is not None]
-        logger.info(f"Working proxies: {working_proxies}")
-        logger.info(f"Count: {len(working_proxies)}")
+        while retry_count <= max_retries:
+            logger.info(f"Attempt {retry_count + 1} with timeout {timeout}s")
+            # Проверяем доступность прокси
+            # Создаём асинхронную сессию
+            async with aiohttp.ClientSession(headers={"User-Agent": "curl/8.7.1"}) as session:
+                tasks = [
+                    check_proxy(session, proxy, test_url, timeout)
+                    for proxy in proxies
+                ]
+                results = await tqdm_asyncio.gather(*tasks, desc="Checking proxies")
 
-        # Если нет рабочих прокси
-        if not working_proxies:
-            logger.info("No working proxies found.")
-            return []
+            # Фильтруем рабочие прокси
+            working_proxies = [result for result in results if result is not None]
+            logger.info(f"Working proxies: {working_proxies}")
+            logger.info(f"Count: {len(working_proxies)}")
 
-        # Сортируем прокси по времени отклика и выбираем N самых быстрых
+            # Если найдено достаточно прокси, возвращаем их
+            if len(working_proxies) >= num_proxies:
+                working_proxies.sort(key=lambda x: x[1])
+                fastest_proxies = working_proxies[:num_proxies]
+                logger.info(f"Selected {len(fastest_proxies)} fastest proxies.")
+                return fastest_proxies
+
+            # Увеличиваем таймаут и делаем повторную попытку
+            retry_count += 1
+            timeout *= 2  # Увеличиваем таймаут в 2 раза
+
+        # Если после всех попыток не удалось найти достаточно прокси
+        logger.info("Max retries reached. Returning available proxies.")
         working_proxies.sort(key=lambda x: x[1])
-        fastest_proxies = [proxy for proxy, _ in working_proxies[:num_proxies]]
-        logger.info(f"Selected {len(fastest_proxies)} fastest proxies.")
-        return fastest_proxies
+        return working_proxies
 
     except Exception as e:
         logger.info(f"Failed to fetch proxies: {e}")
         return []
 
-def fetch_proxies(proxy_file: str = "https.txt", num_proxies: int = 8, test_url: str = "https://etherscan.io/") -> List[str]:
+def fetch_proxies(proxy_file: str = "https.txt", num_proxies: int = 8, test_url: str = "https://etherscan.io/") -> List[Tuple[str, float]]:
     """
     Обёртка для вызова асинхронной функции fetch_proxies_async.
 
@@ -418,7 +451,7 @@ def main():
     # Получаем список прокси
     proxies = fetch_proxies()
     assert len(proxies) >= 8
-    # Указываем количество воркеров равное кол-ву рабочих прокси + 1
+    # Указываем количество воркеров равное кол-ву рабочих прокси
     num_workers = min(len(proxies), 16)
 
     manager = EtherscanScrapperManager(
