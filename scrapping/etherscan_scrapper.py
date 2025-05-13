@@ -1,7 +1,9 @@
 import shutil
-import requests
+import aiohttp
+import asyncio
 import pandas as pd
-from typing import List
+from typing import List, Tuple, Optional
+from tqdm.asyncio import tqdm_asyncio
 import concurrent.futures
 from queue import Queue
 from threading import Lock
@@ -307,7 +309,26 @@ class EtherscanScrapper:
             os.rename(downloaded_file, new_path)
             logger.info(f"File renamed to: {new_file_name}")
 
-def fetch_proxies(proxy_file: str = "https.txt", num_proxies: int = 8, test_url: str = "https://etherscan.io/") -> List[str]:
+async def check_proxy(session: aiohttp.ClientSession, proxy: str, test_url: str) -> Optional[Tuple[str, float]]:
+    """
+    Проверяет доступность прокси и измеряет время отклика.
+
+    :param session: Асинхронная сессия aiohttp.
+    :param proxy: Прокси-сервер для проверки.
+    :param test_url: URL для проверки доступности.
+    :return: Кортеж (прокси, время отклика) или None, если прокси недоступен.
+    """
+    try:
+        start_time = asyncio.get_event_loop().time()
+        async with session.get(test_url, proxy=proxy, timeout=15) as response:
+            latency = asyncio.get_event_loop().time() - start_time
+            if response.status == 200:
+                return proxy, latency
+    except Exception as e:
+        logger.info(f"Proxy {proxy} failed. Exception: {e}")
+    return None
+
+async def fetch_proxies_async(proxy_file: str = "https.txt", num_proxies: int = 8, test_url: str = "https://etherscan.io/") -> List[str]:
     """
     Загружает список актуальных HTTP-прокси, проверяет их доступность и возвращает N самых быстрых.
 
@@ -323,29 +344,23 @@ def fetch_proxies(proxy_file: str = "https.txt", num_proxies: int = 8, test_url:
         
         # Читаем прокси из файла
         with open(proxy_file, "r") as f:
-            proxies = [line.strip() for line in f if line.strip()]
+            proxies = {line.strip() for line in f if line.strip()}
         logger.info(f"Loaded {len(proxies)} proxies.")
         logger.info(proxies)
 
         # Проверяем доступность прокси
-        working_proxies = []
-        for proxy in tqdm(proxies, desc="Checking proxies from https proxy list"):
-            try:
-                headers = {
-                    "User-Agent": "curl/8.7.1"
-                }
-                proxies_dict = {"http": proxy, "https": proxy}
-                start_time = time.time()
-                response = requests.get(test_url, proxies=proxies_dict, headers=headers, timeout=3)
-                latency = time.time() - start_time
-                if response.status_code == 200:
-                    working_proxies.append((proxy, latency))
-                    logger.info(f"Proxy {proxy} is working. Latency: {latency:.2f}s")
-                else:
-                    logger.info(f"Proxy {proxy} failed. Response Status Code: {response.status_code}")
-            except Exception as e:
-                logger.info(f"Proxy {proxy} failed. Exception: {e}")
-                continue
+         # Создаём асинхронную сессию
+        async with aiohttp.ClientSession(headers={"User-Agent": "curl/8.7.1"}) as session:
+            tasks = [
+                check_proxy(session, proxy, test_url)
+                for proxy in proxies
+            ]
+            results = await tqdm_asyncio.gather(*tasks, desc="Checking proxies")
+
+        # Фильтруем рабочие прокси
+        working_proxies = [result for result in results if result is not None]
+        logger.info(f"Working proxies: {working_proxies}")
+        logger.info(f"Count: {len(working_proxies)}")
 
         # Если нет рабочих прокси
         if not working_proxies:
@@ -361,6 +376,21 @@ def fetch_proxies(proxy_file: str = "https.txt", num_proxies: int = 8, test_url:
     except Exception as e:
         logger.info(f"Failed to fetch proxies: {e}")
         return []
+
+def fetch_proxies(proxy_file: str = "https.txt", num_proxies: int = 8, test_url: str = "https://etherscan.io/") -> List[str]:
+    """
+    Обёртка для вызова асинхронной функции fetch_proxies_async.
+
+    :param proxy_file: Имя файла для сохранения списка прокси.
+    :param num_proxies: Количество прокси, которые нужно вернуть.
+    :param test_url: URL для проверки доступности прокси.
+    :return: Список рабочих и быстрых прокси-серверов.
+    """
+    start_time = time.time()  # Начало замера времени
+    proxies = asyncio.run(fetch_proxies_async(proxy_file, num_proxies, test_url))
+    elapsed_time = time.time() - start_time  # Конец замера времени
+    logger.info(f"Time spent checking proxies: {elapsed_time:.2f} seconds")
+    return proxies
 
 def onExit(manager: EtherscanScrapperManager):
     """
