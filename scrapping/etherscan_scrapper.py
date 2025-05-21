@@ -116,14 +116,13 @@ class EtherscanScrapperManager:
         driver = setup_chrome_driver(worker_download_dir, proxy=proxy)
         scrapper = EtherscanScrapper(driver, download_dir=worker_download_dir, timeout=timeout)
 
-        while not self.queue.empty():
-            try:
-                # Берём задачу из очереди
-                with self.lock:
-                    if self.queue.empty():
-                        break
-                    hex_address = self.queue.get()
+        while True:
+            hex_address = self.queue.get()
+            if hex_address is None:
+                self.queue.task_done()
+                break
 
+            try:
                 # Проверяем, есть ли адрес в кэше
                 if hex_address in self.cache_list:
                     logger.info(f"Address {hex_address} is already cached. Skipping...")
@@ -139,8 +138,16 @@ class EtherscanScrapperManager:
                         self.cache_list.append(hex_address)
                     # Обновляем прогресс
                     self.progress_bar.update(1)
+                else:
+                    logger.info(f"Worker {worker_id} failed to process address: {hex_address}")
+                    logger.info(f"Address {hex_address} failed, returning to queue.")
+                    # Если не удалось обработать, возвращаем в очередь
+                    self.queue.put(hex_address)
             except Exception as e:
                 logger.info(f"Worker {worker_id} encountered an error: {e}")
+                logger.info(f"Address {hex_address} failed, returning to queue.")
+                # Возвращаем hex_address обратно в очередь
+                self.queue.put(hex_address)
             finally:
                 self.queue.task_done()
 
@@ -153,7 +160,11 @@ class EtherscanScrapperManager:
         """
         with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
             futures = [executor.submit(self.worker, worker_id) for worker_id in range(self.num_workers)]
-            
+            # Добавляем маркеры завершения для каждого воркера
+            for _ in range(self.num_workers):
+                self.queue.put(None)
+            self.queue.join()
+
             for future in concurrent.futures.as_completed(futures):
                 try:
                     # Получаем результат выполнения задачи
@@ -195,11 +206,14 @@ class EtherscanScrapper:
 
             # Ждём появления информации о страницах
             total_pages_element = WebDriverWait(self.driver, self.timeout).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, 'ul.pagination > li:last-child > a'))
+                EC.presence_of_element_located((By.CSS_SELECTOR, 'ul.pagination > li:last-child > *'))
             )
 
-            # Извлекаем общее количество страниц
-            total_pages = int(total_pages_element.get_attribute("href").split("p=")[-1])
+            # Проверяем, является ли элемент ссылкой <a> с href или <span>
+            if total_pages_element.tag_name == "a" and total_pages_element.get_attribute("href"):
+                total_pages = int(total_pages_element.get_attribute("href").split("p=")[-1])
+            else:
+                total_pages = 1
             logger.info(f"Total pages for {hex_address}: {total_pages}")
 
             # Счётчик ошибок для текущего адреса
@@ -346,8 +360,8 @@ async def fetch_proxies_async(
     proxy_file: str = "https.txt",
     num_proxies: int = 8,
     test_url: str = "https://etherscan.io/",
-    max_retries: int = 3,
-    initial_timeout: int = 3
+    max_retries: int = 5,
+    initial_timeout: int = 2,
 ) -> List[Tuple[str, float]]:
     """
     Загружает список актуальных HTTP-прокси, проверяет их доступность и возвращает N самых быстрых.
@@ -410,7 +424,7 @@ async def fetch_proxies_async(
         logger.info(f"Failed to fetch proxies: {e}")
         return []
 
-def fetch_proxies(proxy_file: str = "https.txt", num_proxies: int = 8, test_url: str = "https://etherscan.io/") -> List[Tuple[str, float]]:
+def fetch_proxies(proxy_file: str = "https.txt", num_proxies: int = 16, test_url: str = "https://etherscan.io/") -> List[Tuple[str, float]]:
     """
     Обёртка для вызова асинхронной функции fetch_proxies_async.
 
